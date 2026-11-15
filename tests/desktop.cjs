@@ -12,7 +12,7 @@
  *   3. Grid Studio: sample load, file upload (#file), chip preset calibration (V12 / V3.1),
  *      image rotation, scale, crop + undo, lens fisheye k1/k2, warp control points,
  *      pixel/state verification, and native PNG export download via session will-download.
- *   4. Packaged / custom-protocol Grid Studio self-test suite (surveyapps://app/vendor/grid-studio/tests.html) -> 100/100 PASS.
+ *   4. Packaged / custom-protocol Grid Studio self-test suite (surveyapps://app/vendor/grid-studio/tests.html) -> 132/132 PASS.
  *   5. Fluorescence Lab: upload synthetic fixed RGB fixtures (PNG, TIFF, JPEG), unlinked X/Y spacing
  *      and placed center origin, channel intensities (mean, R, G, B, FITC, TRITC, Cy5, YFP, brightfield),
  *      Plotly heatmap rendered with zero JS/500 errors, native downloads for Image PNG, Grid PNG,
@@ -388,6 +388,12 @@ async function triggerAndAwaitDownload(electronApp, downloadDir, actionFn, custo
     await page.locator('[data-nav="grid"]').click();
     const gridFrame = page.frameLocator('#frame-grid');
     await gridFrame.locator('#sample').waitFor({ state: 'visible', timeout: 15000 });
+    assert.equal(await gridFrame.locator('body').evaluate(() => !!eval('S.img.el')), false);
+    await gridFrame.locator('#hint').waitFor({state:'visible'});
+    await gridFrame.locator('#file').setInputFiles({name:'invalid.png',mimeType:'image/png',buffer:Buffer.from('invalid')});
+    await gridFrame.getByText('Could not read that image',{exact:true}).waitFor();
+    await gridFrame.locator('#hint').waitFor({state:'visible'});
+    await page.screenshot({path: path.join(RESULTS_DIR, `grid-empty-${modeLabel}.png`)});
 
     const gsPageFrame = () => {
       const f = page.frames().find(fr => fr.url().includes('vendor/grid-studio/index.html'));
@@ -395,8 +401,56 @@ async function triggerAndAwaitDownload(electronApp, downloadDir, actionFn, custo
       return f;
     };
 
+    // Verify clicking the empty #hint upload overlay triggers #file.click()
+    const gridHintClickOk = await gsPageFrame().evaluate(() => {
+      let clicks = 0;
+      const fileIn = document.getElementById('file');
+      const hint = document.getElementById('hint');
+      const orig = fileIn.click;
+      fileIn.click = () => { clicks++; };
+      try {
+        hint.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+        return clicks === 1 && getComputedStyle(hint).cursor === 'pointer';
+      } finally {
+        fileIn.click = orig;
+      }
+    });
+    assert.equal(gridHintClickOk, true, 'Clicking empty #hint in Grid Studio must trigger #file click');
+
+    // Working-tree integration: scripts and storage under the custom origin.
+    const chipIntegration = await gsPageFrame().evaluate(async () => {
+      const scripts = await Promise.all(['chips.js', 'js/chiplist.js', 'js/autofit-app.js'].map(async name => {
+        const response = await fetch(name);
+        return response.ok && response.headers.get('content-type').includes('javascript');
+      }));
+      const key = 'surveyapps.integration.probe';
+      localStorage.setItem(key, 'remembered');
+      const stored = localStorage.getItem(key);
+      localStorage.removeItem(key);
+      return {scripts, stored, count: eval('CHIPS.length'), arrayExport: typeof buildExportCanvas};
+    });
+    assert.ok(chipIntegration.scripts.every(Boolean), 'New scripts served as JavaScript');
+    assert.equal(chipIntegration.stored, 'remembered');
+    assert.ok(chipIntegration.count > 0);
+    assert.equal(chipIntegration.arrayExport, 'function');
+
+    const chipJSON = await gsPageFrame().evaluate(() => JSON.stringify(eval('CHIPS')));
+    await gridFrame.locator('#p-chip input[type=file]').setInputFiles({name:'integration-chips.json', mimeType:'application/json', buffer:Buffer.from(chipJSON)});
+    await gsPageFrame().waitForFunction(() => localStorage.getItem('gridStudio.chipList') !== null);
+    const savedChips = await triggerAndAwaitDownload(electronApp, downloadDir, async () => {
+      await gridFrame.locator('#chipSave').click();
+    }, path.join(downloadDir, 'chips.json'));
+    assert.equal(savedChips.filename, 'chips.json');
+    await gsPageFrame().evaluate(() => { selectChip('V12'); setArrayOnly(true); });
+    const arrayDownload = await triggerAndAwaitDownload(electronApp, downloadDir, async () => {
+      await gridFrame.locator('#export').click();
+    }, path.join(downloadDir, 'array-V12.png'));
+    assert.equal(arrayDownload.filename, 'array-V12.png');
+    await gsPageFrame().evaluate(() => { setArrayOnly(false); clearStoredChipList(); useBuiltinChipList(); });
+
     // 3a. Load built-in sample
     await gridFrame.locator('#sample').click();
+    await gridFrame.locator('#hint').waitFor({state:'hidden'});
     const sampleState = await gsPageFrame().evaluate(() => {
       const st = eval('S');
       return { w: st.img.w, h: st.img.h, docW: st.doc.w, docH: st.doc.h, hasEl: Boolean(st.img.el) };
@@ -574,6 +628,9 @@ async function triggerAndAwaitDownload(electronApp, downloadDir, actionFn, custo
     await page.locator('[data-nav="microscopy"]').click();
     const labFrame = page.frameLocator('#frame-microscopy');
     await labFrame.locator('#btn-compute-fluor').waitFor({ state: 'visible', timeout: 25000 });
+    await labFrame.getByText('Upload image to begin', {exact:true}).waitFor({timeout:25000});
+    await labFrame.locator('#btn-compute-fluor').click();
+    await page.screenshot({path: path.join(RESULTS_DIR, `lab-empty-${modeLabel}.png`)});
 
     const labPageFrame = () => {
       const f = page.frames().find(fr => fr.url().startsWith('http://127.0.0.1:'));
@@ -581,16 +638,35 @@ async function triggerAndAwaitDownload(electronApp, downloadDir, actionFn, custo
       return f;
     };
 
-    // Wait for Dash clientside & initial synthetic image plot before uploading fixtures
+    // Wait for Dash clientside and the intentional empty plot before uploading fixtures
     await labPageFrame().waitForFunction(
       () => {
         if (!window.dash_clientside || typeof window.dash_clientside.set_props !== 'function') return false;
         const gd = document.querySelector('#image-graph .js-plotly-plot');
-        return Boolean(gd && gd.layout && gd.layout.xaxis && Array.isArray(gd.layout.xaxis.range));
+        return Boolean(gd && gd.layout && gd.layout.annotations?.some(a => a.text === 'Upload image to begin') && !(gd.layout.images || []).length && !(gd.data || []).length);
       },
       null,
       { timeout: 30000 }
     );
+
+    // Verify clicking the empty #image-graph workspace triggers the #upload-image file picker
+    const labEmptyClickOk = await labPageFrame().evaluate(() => {
+      let clicks = 0;
+      const fileIn = document.querySelector('#upload-image input[type="file"]');
+      const wrapEl = document.getElementById('image-graph-wrap');
+      const graphEl = document.getElementById('image-graph');
+      if (!fileIn || !wrapEl || !graphEl) return false;
+      const orig = fileIn.click;
+      fileIn.click = () => { clicks++; };
+      try {
+        const target = graphEl.querySelector('.js-plotly-plot') || graphEl;
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+        return clicks === 1 && wrapEl.classList.contains('is-empty') && getComputedStyle(target).cursor === 'pointer';
+      } finally {
+        fileIn.click = orig;
+      }
+    });
+    assert.equal(labEmptyClickOk, true, 'Clicking empty #image-graph in Fluorescence Lab must trigger #upload-image file input click');
 
     // 5a. Upload JPEG, TIFF, and PNG fixtures via actual file input inside #upload-image
     for (const fileName of ['fixture_rgb.jpg', 'fixture_rgb.tiff', 'fixture_rgb.png']) {
@@ -620,6 +696,24 @@ async function triggerAndAwaitDownload(electronApp, downloadDir, actionFn, custo
         { timeout: 25000 }
       );
     }
+
+    // Verify clicking #image-graph when an image is loaded does NOT trigger the file picker
+    const labLoadedClickIgnored = await labPageFrame().evaluate(() => {
+      let clicks = 0;
+      const fileIn = document.querySelector('#upload-image input[type="file"]');
+      const wrapEl = document.getElementById('image-graph-wrap');
+      const graphEl = document.getElementById('image-graph');
+      const orig = fileIn.click;
+      fileIn.click = () => { clicks++; };
+      try {
+        const target = graphEl.querySelector('.js-plotly-plot') || graphEl;
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+        return clicks === 0 && !wrapEl.classList.contains('is-empty');
+      } finally {
+        fileIn.click = orig;
+      }
+    });
+    assert.equal(labLoadedClickIgnored, true, 'Clicking #image-graph after an image is loaded must not trigger file upload');
 
     // 5b. Configure unlinked X/Y spacing (X=80, Y=90) and center point (0, 0) on fixture_rgb.png (241x181 -> 2 rows x 3 cols)
     await labPageFrame().evaluate(() => {
@@ -909,9 +1003,28 @@ async function triggerAndAwaitDownload(electronApp, downloadDir, actionFn, custo
       await page.locator('[data-nav=microscopy]').click();
       await page.frameLocator('#frame-microscopy').locator('#btn-compute-fluor').waitFor({state:'visible',timeout:30000});
       await page.frameLocator('#frame-microscopy').locator('#image-graph .js-plotly-plot').waitFor({state:'visible',timeout:30000});
+      let recoveredBackendPid = null;
+      try {
+        if (process.platform !== 'win32') {
+          const out = execFileSync('pgrep', ['-P', String(electronPid)], { encoding: 'utf8' });
+          const pids = out.split(/\r?\n/).map(s => parseInt(s.trim(), 10)).filter(Boolean);
+          for (const pid of pids) {
+            try {
+              const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8' });
+              if (cmd.includes('surveyapps-backend') || cmd.includes('Python') || cmd.includes('python')) {
+                recoveredBackendPid = pid;
+                break;
+              }
+            } catch {}
+          }
+        }
+      } catch {}
       recordCheck('Backend failure isolation (Grid Studio unaffected) and one-click Retry recovery', {
         killedBackendPid: killedPid,
+        recoveredBackendPid,
       });
+      report._trackedBackendPids = [killedPid, recoveredBackendPid].filter(Boolean);
+      report._electronPid = electronPid;
     }
     allowExpectedErrorWindow = false;
 
@@ -942,12 +1055,24 @@ async function triggerAndAwaitDownload(electronApp, downloadDir, actionFn, custo
   // -------------------------------------------------------------------------
   await new Promise(r => setTimeout(r, 800));
   if (process.platform !== 'win32') {
-    let remaining = '';
-    try {
-      remaining = execFileSync('pgrep', ['-fl', 'surveyapps-backend'], { encoding: 'utf8' }).trim();
-    } catch {
-      remaining = '';
+    const trackedPids = report._trackedBackendPids || [];
+    const surviving = [];
+    for (const pid of trackedPids) {
+      try {
+        process.kill(pid, 0);
+        const cmd = execFileSync('ps', ['-p', String(pid), '-o', 'pid=,ppid=,command='], { encoding: 'utf8' }).trim();
+        if (cmd) surviving.push(cmd);
+      } catch {}
     }
+    if (report._electronPid) {
+      try {
+        const childOut = execFileSync('pgrep', ['-P', String(report._electronPid)], { encoding: 'utf8' }).trim();
+        if (childOut) surviving.push(`children of ${report._electronPid}: ${childOut}`);
+      } catch {}
+    }
+    const remaining = surviving.join('\n');
+    delete report._trackedBackendPids;
+    delete report._electronPid;
     assert.equal(remaining, '', `Orphan surveyapps-backend process still running after quit:\n${remaining}`);
     recordCheck('Clean backend process termination on application quit (zero orphan processes)');
   }

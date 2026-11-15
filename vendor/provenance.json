@@ -2,7 +2,22 @@
   "appA": {
     "url": "https://github.com/zcays/Digital-Microscope-Gridoverlay-Studio",
     "commit": "e6ba1c4",
-    "note": "vendor/grid-studio/ is an exact copy of grid-studio/ at this commit (git archive), without samples/. No working-tree changes and no SurveyApps patch."
+    "note": "Exact public working-tree snapshot: e6ba1c4 plus uncommitted upstream changes; samples excluded.",
+    "workingTreeChanges": [
+      "grid-studio/index.html",
+      "grid-studio/js/autofit.js",
+      "grid-studio/js/crop.js",
+      "grid-studio/js/export.js",
+      "grid-studio/js/grid.js",
+      "grid-studio/js/main.js",
+      "grid-studio/js/panels.js",
+      "grid-studio/js/presets.js",
+      "grid-studio/js/state.js",
+      "grid-studio/tests.html",
+      "grid-studio/chips.js",
+      "grid-studio/js/autofit-app.js",
+      "grid-studio/js/chiplist.js"
+    ]
   },
   "appB": {
     "url": "https://github.com/zcays/Microscopy-Grid-Overlay",

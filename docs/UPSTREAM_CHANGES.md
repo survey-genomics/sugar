@@ -1,6 +1,6 @@
 # Source preservation and integration changes
 
-`vendor/provenance.json` records both pinned commits. `vendor/grid-studio/` is an exact, unpatched copy of Grid Studio at commit `e6ba1c4` (updated 2026-11-13: Auto-fit that works through tissue on every chip version, and a crop that keeps straight edges on a rotated image). `vendor/microscopy/` preserves the original scientific Python sources. No user photos, unrelated essay, machine configuration or git metadata are included.
+`vendor/provenance.json` records both pinned commits. `vendor/grid-studio/` is an exact public working-tree copy of Grid Studio: base commit `e6ba1c4` plus the uncommitted changes listed in `vendor/provenance.json`. `vendor/microscopy/` preserves the original scientific Python sources. No user photos, unrelated essay, machine configuration or git metadata are included.
 
 The runtime copy `backend/microscopy_app.py` retains upstream algorithms and callbacks. Targeted changes:
 
@@ -23,3 +23,8 @@ Grid Studio: SurveyApps used to carry one small patch to `autofit.js` (a start-s
 Plotly compatibility: change deprecated heatmap axis `titlefont` to `title.font`. Plotly 7 otherwise raised a callback error after fluorescence computation.
 
 The App B runtime diff is included as `vendor/app-b-surveyapps.patch`, with the original file retained alongside. App A needs no patch (see above). No original repo working-tree file is edited by SurveyApps build or test commands.
+
+## Local working-tree integration
+Grid Studio now includes crop-to-array, editable chips.js, chip list import/export and persistence, chiplist.js and autofit-app.js. This is e6ba1c4 plus uncommitted upstream changes, listed in vendor/provenance.json. Run `python3 scripts/sync_grid_studio.py` from this checkout to sync and byte-verify the public allowlist; samples are never traversed. desktop/protocol.cjs owns protocol resource handling; main.cjs retains session security and lifecycle. desktop/** and vendor/grid-studio/** package the new scripts; samples are explicitly excluded. Local builds use dist-local.
+
+Startup uses an empty Lab work surface with an Upload image prompt. Image operations and measurements require an upload; no demonstration pixels are measured. Grid Studio starts empty with a translucent dark overlay (`#hint`) dimming the stage grid so the drop/open prompt is legible until a valid image or sample is loaded. The optional Grid Studio sample uses grayscale pixels. Uploaded image colors are preserved.
